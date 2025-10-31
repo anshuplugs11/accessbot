@@ -8,7 +8,7 @@ from flask import Flask
 
 # Bot token
 BOT_TOKEN = os.environ.get('BOT_TOKEN', 'YOUR_BOT_TOKEN_HERE')
-ADMIN_IDS = [7380972597, 7307878729]
+ADMIN_IDS = [5316048641, 5819790024]
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
@@ -16,7 +16,7 @@ bot = telebot.TeleBot(BOT_TOKEN)
 firebase_cred_path = os.environ.get('FIREBASE_CRED_PATH', 'firebase-key.json')
 cred = credentials.Certificate(firebase_cred_path)
 firebase_admin.initialize_app(cred, {
-    'databaseURL': os.environ.get('FIREBASE_URL', 'https://alienx-access-control-default-rtdb.firebaseio.com/')
+    'databaseURL': os.environ.get('FIREBASE_URL', 'https://alien-51afb-default-rtdb.firebaseio.com/')
 })
 
 users_ref = db.reference('users')
