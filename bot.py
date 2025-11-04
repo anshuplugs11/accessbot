@@ -1,6 +1,6 @@
 # --------------------------------------------------------------
-# AlienX Access Control Bot (Telegram + Firebase)
-# Syncs with Flask API via settings/trail_enabled
+# AlienX Access Control Bot – WEBHOOK MODE (Render.com Ready)
+# No 409 errors | Syncs with Flask API via trail_enabled
 # --------------------------------------------------------------
 
 import os
@@ -9,17 +9,19 @@ import logging
 from threading import Thread
 from datetime import datetime, timedelta
 import telebot
+from telebot import types
 import firebase_admin
 from firebase_admin import credentials, db
+from flask import Flask, request, abort
 
 # ------------------------------------------------------------------
 # 1. Config & Logging
 # ------------------------------------------------------------------
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN not set!")
+    raise ValueError("BOT_TOKEN not set in environment!")
 
-ADMIN_IDS = [5316048641, 5819790024]  # Add your IDs
+ADMIN_IDS = [5316048641, 5819790024]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 bot = telebot.TeleBot(BOT_TOKEN)
 
 # ------------------------------------------------------------------
-# 2. Firebase
+# 2. Firebase Setup
 # ------------------------------------------------------------------
 cred_path = os.environ.get('FIREBASE_CRED_PATH', 'firebase-key.json')
 cred = credentials.Certificate(cred_path)
@@ -46,7 +48,28 @@ users_ref = db.reference('users')
 settings_ref = db.reference('settings')
 
 # ------------------------------------------------------------------
-# 3. Helpers
+# 3. Flask App (Webhook + Health)
+# ------------------------------------------------------------------
+app = Flask(__name__)
+
+@app.route('/', methods=['GET', 'POST'])
+def webhook():
+    if request.method == 'GET':
+        return "AlienX Bot is alive! Use /start in Telegram.", 200
+    elif request.method == 'POST':
+        try:
+            json_update = request.get_data().decode('utf-8')
+            update = types.Update.de_json(json_update)
+            bot.process_new_updates([update])
+            return '', 200
+        except Exception as e:
+            logger.error(f"Webhook error: {e}")
+            return 'Error', 500
+    else:
+        abort(403)
+
+# ------------------------------------------------------------------
+# 4. Helper Functions
 # ------------------------------------------------------------------
 def is_admin(user_id):
     return user_id in ADMIN_IDS
@@ -55,7 +78,8 @@ def is_trail_enabled():
     try:
         val = settings_ref.child('trail_enabled').get()
         return bool(val) if val is not None else False
-    except:
+    except Exception as e:
+        logger.error(f"Trail check failed: {e}")
         return False
 
 def parse_duration(duration_str):
@@ -82,10 +106,10 @@ def format_time(expiry_str):
         rem_str = f"{days}d {hours}h {mins}m" if days else f"{hours}h {mins}m" if hours else f"{mins}m"
         return "ACTIVE", rem_str
     except:
-        return "ERROR", "Invalid"
+        return "ERROR", "Invalid date"
 
 # ------------------------------------------------------------------
-# 4. Bot Commands
+# 5. Bot Commands
 # ------------------------------------------------------------------
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -94,15 +118,15 @@ def start(message):
         text = f"""
 *AlienX Admin Panel*
 
-*Trail Status:* `{trail}`
+*Public Trail:* `{trail}`
 *Commands:*
-• `/add <id> <30d>` – Add user
+• `/add <id> <30d>` – Add premium
 • `/remove <id>` – Remove user
 • `/check <id>` – Check access
 • `/users` – List users
-• `/trailon` – Enable public trail
-• `/trailoff` – Disable public trail
-• `/stats` – Bot stats
+• `/trailon` – Enable public access
+• `/trailoff` – Disable public access
+• `/stats` – View stats
 
 *Owners:* @aurenkai | @aliensexy
         """
@@ -110,8 +134,8 @@ def start(message):
         text = f"""
 *AlienX Access Bot*
 
-*Trail Status:* `{trail}`
-Use `/check` to see your access.
+*Public Trail:* `{trail}`
+Use `/check` to see your status.
 
 *Contact:* @aurenkai | @aliensexy
         """
@@ -197,8 +221,8 @@ def check_access(message):
 *Remaining:* `{rem}`
 *Expires:* `{data['expiry']}`
         """, parse_mode='Markdown')
-    except Exception as e:
-        bot.reply_to(message, "Error. Use `/check` or `/check <id>`")
+    except:
+        bot.reply_to(message, "Use `/check` or `/check <id>`")
 
 @bot.message_handler(commands=['users'])
 def list_users(message):
@@ -227,7 +251,7 @@ def stats(message):
     active = sum(1 for d in users.values() if format_time(d['expiry'])[0] == "ACTIVE")
     trail = "ON" if is_trail_enabled() else "OFF"
     bot.reply_to(message, f"""
-*Stats*
+*Bot Stats*
 • Total Users: `{len(users)}`
 • Active: `{active}`
 • Public Trail: `{trail}`
@@ -238,41 +262,32 @@ def unknown(message):
     bot.reply_to(message, "Unknown command. Use /start")
 
 # ------------------------------------------------------------------
-# 5. Flask Keeper (Render.com) – Optional but recommended
+# 6. Run Webhook
 # ------------------------------------------------------------------
-from flask import Flask
-keep_alive = Flask(__name__)
+def run_webhook():
+    # Remove any old webhook
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+    except:
+        pass
 
-@keep_alive.route('/')
-def home():
-    return "Bot is alive!"
+    # Set new webhook
+    webhook_url = f"https://{os.environ.get('RENDER_EXTERNAL_HOSTNAME', 'accessbot-wltq.onrender.com')}/"
+    try:
+        bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook set: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+        raise
 
-def run_flask():
+    # Start Flask
     port = int(os.environ.get('PORT', 10000))
-    keep_alive.run(host='0.0.0.0', port=port, threaded=True)
-
-# ------------------------------------------------------------------
-# 6. Polling with Auto-Restart
-# ------------------------------------------------------------------
-def start_polling():
-    while True:
-        try:
-            logger.info("Starting bot polling...")
-            bot.remove_webhook()
-            bot.polling(none_stop=True, interval=0, timeout=60)
-        except Exception as e:
-            logger.error(f"Polling error: {e}")
-            time.sleep(15)
+    app.run(host='0.0.0.0', port=port, use_reloader=False)
 
 # ------------------------------------------------------------------
 # 7. Main
 # ------------------------------------------------------------------
 if __name__ == '__main__':
-    logger.info("AlienX Bot Starting...")
-
-    # Start Flask keeper in background
-    Thread(target=run_flask, daemon=True).start()
-    time.sleep(2)
-
-    # Start bot
-    start_polling()
+    logger.info("AlienX Bot Starting in WEBHOOK MODE...")
+    run_webhook()
